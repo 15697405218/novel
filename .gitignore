@@ -8,3 +8,5 @@ build/
 *.spec
 *.sqlite
 *.sqlite-journal
+dist/
+packaging/cache/

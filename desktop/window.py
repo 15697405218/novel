@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from desktop import auth_client
+from desktop.account import BASE
 from desktop.dialogs import FormDialog, alert, ask, confirm, prompt
 from desktop.i18n import set_locale, tr
 from desktop.icons import app_icon, icon
@@ -193,9 +194,6 @@ class LoginPage(QWidget):
         self.submit.setMinimumHeight(40)
         self.switch = _button("", self._switch, kind="link")
         self.switch.setFlat(True)
-        self.server = QLineEdit("http://127.0.0.1:8787")
-        self.server.setObjectName("server")
-        self.server.setAlignment(Qt.AlignCenter)
         layout.addWidget(badge, alignment=Qt.AlignCenter)
         layout.addWidget(self.card_title)
         layout.addWidget(self.card_hint)
@@ -207,7 +205,6 @@ class LoginPage(QWidget):
         layout.addWidget(self.error)
         layout.addWidget(self.submit)
         layout.addWidget(self.switch, alignment=Qt.AlignCenter)
-        layout.addWidget(self.server)
         self.name.hide()
         self.retranslate()
         outer = QVBoxLayout(self)
@@ -238,7 +235,6 @@ class LoginPage(QWidget):
         self.submit.setText(tr("register_submit") if registering else tr("login_submit"))
         self.switch.setText(tr("to_login") if registering else tr("to_register"))
         self.forgot.setText(tr("forgot"))
-        self.server.setPlaceholderText(tr("server_line"))
 
     def _switch(self) -> None:
         self._mode = "register" if self._mode == "login" else "login"
@@ -249,14 +245,14 @@ class LoginPage(QWidget):
         try:
             if self._mode == "register":
                 payload = auth_client.register(
-                    self.server.text().strip(),
+                    BASE,
                     self.email.text().strip(),
                     self.name.text().strip(),
                     self.password.text(),
                 )
             else:
                 payload = auth_client.login(
-                    self.server.text().strip(),
+                    BASE,
                     self.email.text().strip(),
                     self.password.text(),
                 )
@@ -264,10 +260,10 @@ class LoginPage(QWidget):
             self.error.setText(exc.message)
             return
         except Exception:
-            self.error.setText("连不上账号服务。先在另一个窗口运行 python -m auth")
+            self.error.setText(tr("auth_down"))
             return
         user = payload.get("user") or {}
-        self._enter(self.server.text().strip(), payload.get("token", ""), user)
+        self._enter(payload.get("token", ""), user)
 
 
 class ProjectPage(QWidget):
@@ -2439,17 +2435,15 @@ class NovelWindow(QMainWindow):
         self.statusBar().hide()
         self._glass = False
         self.login = LoginPage(self._enter)
-        saved = self.store.value("auth_url", "http://127.0.0.1:8787")
-        self.login.server.setText(str(saved))
         self.stack.addWidget(self.login)
         token = str(self.store.value("token", "") or "")
         if token:
             try:
-                payload = auth_client.me(str(saved), token)
+                payload = auth_client.me(BASE, token)
             except Exception:
                 payload = None
             if payload and payload.get("user"):
-                self._enter(str(saved), token, payload["user"])
+                self._enter(token, payload["user"])
 
     def minimumSizeHint(self) -> QSize:
         return QSize(0, 0)
@@ -2476,11 +2470,10 @@ class NovelWindow(QMainWindow):
         set_long(hwnd, -16, style)
         ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004)
 
-    def _enter(self, base: str, token: str, user: dict) -> None:
+    def _enter(self, token: str, user: dict) -> None:
         user_id = str(user.get("id") or "")
         if not user_id or not token:
             return
-        self.store.setValue("auth_url", base)
         self.store.setValue("token", token)
         self.store.setValue("user_id", user_id)
         self.store.setValue("user_name", str(user.get("name") or ""))

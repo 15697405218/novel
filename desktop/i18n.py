@@ -5,8 +5,8 @@ _LOCALE = "zh"
 ZH = {
     "tagline": "专注写作，AI 相伴",
     "forgot": "忘记密码？",
-    "forgot_body": "密码记在本机的账号服务里，这里不能重置。",
-    "server_line": "服务器地址",
+    "forgot_body": "密码只保存在这台电脑上，这里不能重置。",
+    "auth_down": "登录没有准备好，请再试一次",
     "shelf": "我的书架",
     "shelf_count": "共 {n} 部作品",
     "new_work": "新建作品",
@@ -187,8 +187,8 @@ ZH = {
 EN = {
     "tagline": "Writing, with an AI beside you",
     "forgot": "Forgot password?",
-    "forgot_body": "The password lives in the account service on this computer. It cannot be reset here.",
-    "server_line": "Server",
+    "forgot_body": "The password stays on this computer. It cannot be reset here.",
+    "auth_down": "Sign-in is not ready yet. Try again.",
     "shelf": "My shelf",
     "shelf_count": "{n} books",
     "new_work": "New book",
