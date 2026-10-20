@@ -8,6 +8,16 @@ from desktop.engine import chat_turn
 from desktop.store import Library
 
 
+def public_error(exc: Exception) -> str:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return f"模型接口返回 {status}"
+    text = str(exc)
+    if "Bearer " in text or "api_key" in text.lower() or "sk-" in text:
+        return "模型请求失败"
+    return text[:400]
+
+
 class Job(QThread):
     done = Signal(str)
     failed = Signal(str)
@@ -20,7 +30,7 @@ class Job(QThread):
         try:
             self.done.emit(self._work())
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self.failed.emit(public_error(exc))
 
 
 class ChatWorker(QThread):
@@ -29,7 +39,17 @@ class ChatWorker(QThread):
     ask = Signal(str)
     changed = Signal(str)
 
-    def __init__(self, path, project_id: str, focus: str, focus_id: str | None, base: str, key: str, model: str):
+    def __init__(
+        self,
+        path,
+        project_id: str,
+        focus: str,
+        focus_id: str | None,
+        base: str,
+        key: str,
+        model: str,
+        allow_direct: bool = True,
+    ):
         super().__init__()
         self._path = path
         self._project_id = project_id
@@ -38,6 +58,7 @@ class ChatWorker(QThread):
         self._base = base
         self._key = key
         self._model = model
+        self._allow_direct = allow_direct
         self._ready = threading.Event()
         self._decision = False
 
@@ -70,12 +91,13 @@ class ChatWorker(QThread):
                 self._key,
                 self._model,
                 self._approve,
+                self._allow_direct,
             )
             library.add_message(self._project_id, "assistant", text or "（没有回复）")
             self.reply.emit(text or "（没有回复）")
             if reload_id:
                 self.changed.emit(reload_id)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self.failed.emit(public_error(exc))
         finally:
             library.close()

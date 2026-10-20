@@ -223,6 +223,7 @@ def run_tool(
     name: str,
     args: dict,
     approve: Callable[[str], bool],
+    allow_direct: bool = True,
 ) -> tuple[str, str | None]:
     """Return tool text and the chapter id to reload, if the open chapter changed."""
     if name == "list_chapters":
@@ -270,7 +271,8 @@ def run_tool(
     if name not in WRITE_TOOLS:
         return "Unknown tool.", None
 
-    direct = name in DIRECT_CHAPTER and _chapter_id(store, project_id, args, open_chapter_id) == open_chapter_id
+    same_chapter = _chapter_id(store, project_id, args, open_chapter_id) == open_chapter_id
+    direct = allow_direct and name in DIRECT_CHAPTER and same_chapter
     if name in {"create_entry", "delete_entry"} or not direct:
         if not approve(f"{name}: {json.dumps(args, ensure_ascii=False)[:500]}"):
             return "The writer declined. Leave the book unchanged.", None
@@ -334,8 +336,20 @@ def endpoint(base_url: str) -> str:
     return f"{url}/chat/completions"
 
 
-def complete(base_url: str, api_key: str, model: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
-    payload: dict = {"model": model, "messages": messages, "temperature": 0.7}
+def complete(
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    temperature: float = 0.7,
+    max_tokens: int | None = None,
+) -> dict:
+    if "api.anthropic.com" in base_url:
+        return _anthropic_message(api_key, model, messages, temperature, max_tokens)
+    payload: dict = {"model": model, "messages": messages, "temperature": temperature}
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     if tools:
         payload["tools"] = tools
     response = httpx.post(
@@ -350,6 +364,47 @@ def complete(base_url: str, api_key: str, model: str, messages: list[dict], tool
     return choice
 
 
+def _anthropic_message(
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    temperature: float = 0.7,
+    max_tokens: int | None = None,
+) -> dict:
+    system = "\n\n".join(item["content"] for item in messages if item.get("role") == "system")
+    dialog = [
+        {"role": item["role"], "content": item["content"]}
+        for item in messages
+        if item.get("role") in {"user", "assistant"} and item.get("content")
+    ]
+    if not dialog:
+        dialog = [{"role": "user", "content": system or "Hello"}]
+        system = ""
+    payload: dict = {
+        "model": model,
+        "max_tokens": max_tokens or 4096,
+        "temperature": temperature,
+        "messages": dialog,
+    }
+    if system:
+        payload["system"] = system
+    response = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=payload,
+        timeout=120,
+    )
+    response.raise_for_status()
+    data = response.json()
+    blocks = data.get("content") or []
+    text = "".join(str(block.get("text") or "") for block in blocks if isinstance(block, dict))
+    return {"role": "assistant", "content": text.strip()}
+
+
 def chat_turn(
     store: Library,
     project_id: str,
@@ -360,6 +415,7 @@ def chat_turn(
     api_key: str,
     model: str,
     approve: Callable[[str], bool],
+    allow_direct: bool = True,
 ) -> tuple[str, str | None]:
     messages: list[dict] = [
         {"role": "system", "content": read_prompt("chat-system") + "\n\n" + read_prompt("chat-tools")},
@@ -383,7 +439,15 @@ def chat_turn(
                 args = {}
             if not isinstance(args, dict):
                 args = {}
-            text, changed = run_tool(store, project_id, focus_id if focus == "chapter" else None, name, args, approve)
+            text, changed = run_tool(
+                store,
+                project_id,
+                focus_id if focus == "chapter" else None,
+                name,
+                args,
+                approve,
+                allow_direct,
+            )
             if changed:
                 reload_id = changed
             messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": text})
@@ -431,11 +495,21 @@ def folded_history(
     return folded
 
 
-def plain_complete(base_url: str, api_key: str, model: str, system: str, user: str) -> str:
+def plain_complete(
+    base_url: str,
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    temperature: float = 0.7,
+    max_tokens: int | None = None,
+) -> str:
     message = complete(
         base_url,
         api_key,
         model,
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
     return str(message.get("content") or "").strip()

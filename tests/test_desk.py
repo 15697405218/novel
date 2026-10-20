@@ -21,6 +21,26 @@ class Words(unittest.TestCase):
     def test_plain(self) -> None:
         self.assertEqual(html_to_plain("<p>甲</p><p>乙</p>"), "甲\n乙")
 
+    def test_qt_document_counts_only_visible_text(self) -> None:
+        html = (
+            '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN" "http://www.w3.org/TR/REC-html40/strict.dtd">'
+            "<html><head><style>p { white-space: pre-wrap; }</style></head>"
+            "<body><p>县试将至</p></body></html>"
+        )
+        self.assertEqual(html_to_plain(html), "县试将至")
+        self.assertEqual(count_words_in_html(html), 4)
+
+    def test_book_total_ignores_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            library = Library(Path(folder) / "library.sqlite")
+            project_id = library.create_project("书", "")
+            volume_id = library.volumes(project_id)[0]["id"]
+            chapter_id = library.create_chapter(project_id, volume_id, "第一章")
+            library.save_chapter_content(chapter_id, "<p>县试将至</p>")
+            library.save_summary(chapter_id, "这是一段不会计入全书的摘要文字")
+            self.assertEqual(library.project_word_count(project_id), 4)
+            library.close()
+
 
 class Recall(unittest.TestCase):
     def test_related_passage(self) -> None:

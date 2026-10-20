@@ -2,6 +2,8 @@ import re
 
 HTML_TAG = re.compile(r"<[^>]*>")
 HTML_ENTITY = re.compile(r"&[#a-zA-Z0-9]+;")
+HIDDEN_BLOCK = re.compile(r"(?is)<(script|style|head)\b[^>]*>.*?</\1>")
+DOCTYPE = re.compile(r"(?is)<!DOCTYPE[^>]*>")
 CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
 WORD = re.compile(r"[A-Za-z0-9]+(?:['’\-]?[A-Za-z0-9]+)*")
 
@@ -15,12 +17,12 @@ def count_words(text: str | None) -> int:
 
 
 def count_words_in_html(html: str) -> int:
-    plain = HTML_ENTITY.sub(" ", HTML_TAG.sub(" ", html or ""))
-    return count_words(plain)
+    return count_words(html_to_plain(html))
 
 
 def html_to_plain(html: str) -> str:
-    text = html or ""
+    text = HIDDEN_BLOCK.sub(" ", html or "")
+    text = DOCTYPE.sub(" ", text)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</(?:p|div|h[1-6]|li|blockquote)>", "\n", text, flags=re.IGNORECASE)
     text = HTML_TAG.sub("", text)

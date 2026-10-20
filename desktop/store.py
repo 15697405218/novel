@@ -76,6 +76,16 @@ CREATE TABLE IF NOT EXISTS provider (
     model TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS ai_connection (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    model TEXT NOT NULL,
+    api_key TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -97,7 +107,33 @@ class Library:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self.conn.executescript(SCHEMA)
+        self._ensure_project_columns()
+        self._ensure_connections()
         self.conn.commit()
+
+    def _ensure_project_columns(self) -> None:
+        names = {row[1] for row in self.conn.execute("PRAGMA table_info(project)")}
+        if "description" not in names:
+            self.conn.execute("ALTER TABLE project ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+        if "kind" not in names:
+            self.conn.execute("ALTER TABLE project ADD COLUMN kind TEXT NOT NULL DEFAULT 'novel'")
+        if "target_words" not in names:
+            self.conn.execute("ALTER TABLE project ADD COLUMN target_words INTEGER NOT NULL DEFAULT 0")
+
+    def _ensure_connections(self) -> None:
+        count = self._one("SELECT COUNT(*) AS n FROM ai_connection")
+        if count is not None and int(count["n"]) > 0:
+            return
+        legacy = self._one("SELECT * FROM provider WHERE id = 1")
+        if legacy is None or not str(legacy["api_key"] or "").strip():
+            return
+        self.conn.execute(
+            """
+            INSERT INTO ai_connection (id, kind, label, base_url, model, api_key, active, created_at)
+            VALUES (?, 'custom', '自定义（兼容 OpenAI）', ?, ?, ?, 1, ?)
+            """,
+            (new_id(), legacy["base_url"], legacy["model"], legacy["api_key"], now()),
+        )
 
     def close(self) -> None:
         self.conn.close()
@@ -114,13 +150,33 @@ class Library:
     def project(self, project_id: str) -> sqlite3.Row | None:
         return self._one("SELECT * FROM project WHERE id = ?", (project_id,))
 
-    def create_project(self, title: str, genre: str) -> str:
+    def create_project(
+        self,
+        title: str,
+        genre: str,
+        description: str = "",
+        kind: str = "novel",
+        target_words: int = 0,
+    ) -> str:
         project_id = new_id()
         stamp = now()
         volume_id = new_id()
         self.conn.execute(
-            "INSERT INTO project (id, title, genre, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (project_id, title.strip() or "未命名", genre.strip(), stamp, stamp),
+            """
+            INSERT INTO project (
+                id, title, genre, description, kind, target_words, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                title.strip() or "未命名",
+                genre.strip(),
+                description.strip(),
+                kind,
+                target_words,
+                stamp,
+                stamp,
+            ),
         )
         self.conn.execute(
             "INSERT INTO volume (id, project_id, title, position, created_at) VALUES (?, ?, ?, 1, ?)",
@@ -132,6 +188,43 @@ class Library:
         )
         self.conn.commit()
         return project_id
+
+    def update_project(
+        self,
+        project_id: str,
+        title: str,
+        genre: str,
+        description: str,
+        kind: str,
+        target_words: int,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE project
+            SET title = ?, genre = ?, description = ?, kind = ?, target_words = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (title.strip() or "未命名", genre.strip(), description.strip(), kind, target_words, now(), project_id),
+        )
+        self.conn.commit()
+
+    def rename_chapter(self, chapter_id: str, title: str) -> None:
+        self.conn.execute(
+            "UPDATE chapter SET title = ? WHERE id = ?",
+            (title.strip() or "未命名", chapter_id),
+        )
+        self.conn.commit()
+
+    def entries_across(self, kind: str) -> list[sqlite3.Row]:
+        return self._all(
+            """
+            SELECT entry.name, entry.body, project.title AS project_title
+            FROM entry JOIN project ON project.id = entry.project_id
+            WHERE entry.kind = ?
+            ORDER BY project.updated_at DESC, entry.name
+            """,
+            (kind,),
+        )
 
     def rename_project(self, project_id: str, title: str) -> None:
         self.conn.execute(
@@ -215,11 +308,10 @@ class Library:
         )
 
     def project_word_count(self, project_id: str) -> int:
-        row = self._one(
-            "SELECT COALESCE(SUM(word_count), 0) AS n FROM chapter WHERE project_id = ?",
-            (project_id,),
-        )
-        return int(row["n"]) if row else 0
+        total = 0
+        for row in self._all("SELECT content FROM chapter WHERE project_id = ?", (project_id,)):
+            total += count_words_in_html(row["content"] or "")
+        return total
 
     def save_summary(self, chapter_id: str, summary: str) -> None:
         self.conn.execute(
@@ -393,6 +485,48 @@ class Library:
             (base_url.strip(), model.strip(), api_key.strip()),
         )
         self.conn.commit()
+
+    def connections(self) -> list[sqlite3.Row]:
+        self._ensure_connections()
+        return self._all("SELECT * FROM ai_connection ORDER BY created_at")
+
+    def connect_provider(self, kind: str, label: str, base_url: str, model: str, api_key: str) -> str:
+        self.conn.execute("UPDATE ai_connection SET active = 0")
+        connection_id = new_id()
+        self.conn.execute(
+            """
+            INSERT INTO ai_connection (id, kind, label, base_url, model, api_key, active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (connection_id, kind, label, base_url.strip(), model.strip(), api_key.strip(), now()),
+        )
+        self.conn.commit()
+        self.save_provider(base_url, model, api_key)
+        return connection_id
+
+    def activate_provider(self, connection_id: str) -> None:
+        row = self._one("SELECT * FROM ai_connection WHERE id = ?", (connection_id,))
+        if row is None:
+            return
+        self.conn.execute("UPDATE ai_connection SET active = 0")
+        self.conn.execute("UPDATE ai_connection SET active = 1 WHERE id = ?", (connection_id,))
+        self.conn.commit()
+        self.save_provider(row["base_url"], row["model"], row["api_key"])
+
+    def disconnect_provider(self, connection_id: str) -> None:
+        row = self._one("SELECT * FROM ai_connection WHERE id = ?", (connection_id,))
+        if row is None:
+            return
+        was_active = bool(row["active"])
+        self.conn.execute("DELETE FROM ai_connection WHERE id = ?", (connection_id,))
+        self.conn.commit()
+        if not was_active:
+            return
+        nxt = self._one("SELECT * FROM ai_connection ORDER BY created_at DESC LIMIT 1")
+        if nxt is None:
+            self.save_provider("", "", "")
+            return
+        self.activate_provider(nxt["id"])
 
     def chapter_plain(self, chapter_id: str) -> str:
         row = self.chapter(chapter_id)
